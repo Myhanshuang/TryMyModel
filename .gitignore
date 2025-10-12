@@ -2,6 +2,8 @@ checkpoints
 
 data
 
+__pycache__
+
 utils/coco-caption
 
 flickr8k_test_coco_format.json
