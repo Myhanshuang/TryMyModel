@@ -41,9 +41,9 @@ def save_checkpoint(model, optimizer, epoch, loss, best_models, path_dir, train_
     return best_models
 
 def load_checkpoint(path_dir, model, optimizer, scheduler=None):
-    # model_name = model.name
+    model_name = model.name
 
-    model_name = 'pretrain_vit_gpt2'
+    # model_name = 'pretrain_vit_gpt2'
     checkpoint_file = None
     if not os.path.exists(path_dir):
         return 0, [], [], []
