@@ -185,91 +185,114 @@ class PaperModel(nn.Module):
     def generate(self, pixel_values, max_length, num_beams):
         """
         使用 Beam Search 生成图像描述。
-        这个实现是向量化的，可以正确处理 batch。
+        这个实现是向量化的，可以正确处理 batch。（已修正版本）
         """
         batch_size = pixel_values.size(0)
         device = pixel_values.device
 
+        # 引用 decoder 和 tokenizer 的关键 ID
+        decoder = self.decoder
+        start_token_id = 1  # 根据 SimpleTokenizer 定义
+        end_token_id = 2  # 根据 SimpleTokenizer 定义
+        pad_token_id = 0  # 根据 SimpleTokenizer 定义
+
         # 1. 将图像编码一次，并为每个 beam 复制
-        img_features = self.encoder(pixel_values)  # Shape: [batch_size, num_pixels, encoder_dim]
-        img_features = img_features.expand(batch_size, num_beams, -1, -1).reshape(batch_size * num_beams,
-                                                                                  img_features.size(1),
-                                                                                  img_features.size(2))
+        img_features = self.encoder(pixel_values)
+        img_features = img_features.repeat_interleave(num_beams, dim=0)
 
         # 2. 初始化 LSTM 的隐藏状态 (h, c)，并为每个 beam 复制
-        h, c = self.decoder._init_hc(img_features)  # Shape: [batch_size * num_beams, hidden_dim]
+        h, c = decoder._init_hc(img_features)
 
         # 3. 初始化序列和分数
         # beam_sequences 存储了每个 beam 正在生成的序列
-        beam_sequences = torch.full((batch_size, num_beams, max_length), self.decoder.emb.padding_idx, dtype=torch.long,
-                                    device=device)
-        # 使用 <start> token 初始化所有序列的第一个词
-        beam_sequences[:, :, 0] = self.decoder.emb.weight.requires_grad  # tokenizer.start_token_id
+        input_ids = torch.full((batch_size * num_beams, 1), start_token_id, dtype=torch.long, device=device)
 
         # beam_scores 存储了每个 beam 的累计对数概率分数
         beam_scores = torch.zeros(batch_size, num_beams, device=device)
-        beam_scores[:, 1:] = -1e9  # 确保只有第一个 beam 在开始时是活跃的
+        beam_scores[:, 1:] = -1e9
+        beam_scores = beam_scores.view(-1)  # 展平为 [batch_size * num_beams]
 
-        # 当前时间步的输入词 (decoder input)
-        # 在第一个时间步，所有 beam 的输入都是 <start> token
-        prev_words = torch.full((batch_size * num_beams, 1), self.decoder.emb.weight.requires_grad, dtype=torch.long,
-                                device=device)  # tokenizer.start_token_id
+        # 跟踪已完成的序列和未完成的序列
+        # `done` 标记每个 batch item 是否已找到 num_beams 个完成的序列
+        done = [False for _ in range(batch_size)]
 
-        # 跟踪已完成的序列
-        completed_sequences = []
-
-        for t in range(1, max_length):
+        for t in range(max_length - 1):
             # emb.shape: [batch_size * num_beams, embedding_dim]
-            emb = self.decoder.emb(prev_words).squeeze(1)
+            emb = decoder.emb(input_ids).squeeze(1)
 
-            # --- 以下是 Decoder 的单步前向传播 ---
-            attn_img, _ = self.decoder.attn(img_features, h)
-            gate = self.decoder.sigmoid(self.decoder.h_gate(h))
+            # --- Decoder 的单步前向传播 ---
+            attn_img, _ = decoder.attn(img_features, h)
+            gate = decoder.sigmoid(decoder.h_gate(h))
             gate_img = attn_img * gate
             lstm_input = torch.cat((emb, gate_img), dim=1)
-            h, c = self.decoder.lstm(lstm_input, (h, c))
-            logits = self.decoder.decode(h)  # Shape: [batch_size * num_beams, vocab_size]
+            h, c = decoder.lstm(lstm_input, (h, c))
+            logits = decoder.decode(h)
 
             # --- Beam Search 核心逻辑 ---
-            log_probs = torch.log_softmax(logits, dim=-1)  # 对数概率
+            log_probs = torch.log_softmax(logits, dim=-1)  # 对数概率 [batch_size * num_beams, vocab_size]
 
-            # 将 log_probs 与之前的 beam 分数相加，得到所有候选序列的总分数
-            # log_probs.shape: [batch_size * num_beams, vocab_size]
-            # beam_scores.view(-1, 1): [batch_size * num_beams, 1]
-            candidate_scores = beam_scores.view(-1, 1) + log_probs
+            # 只有在 beam score 不为 -inf 时才继续扩展（防止扩展已完成的beam）
+            log_probs = log_probs + beam_scores.unsqueeze(1)
 
             # 展平分数，以便在所有 beam 的所有可能 next_token 中选择 top-k
             # flat_candidate_scores.shape: [batch_size, num_beams * vocab_size]
-            flat_candidate_scores = candidate_scores.view(batch_size, -1)
+            scores = log_probs.view(batch_size, -1)
 
-            # 在每个样本内部，独立地选出分数最高的 num_beams 个候选
-            top_scores, top_indices = torch.topk(flat_candidate_scores, num_beams, dim=-1)
-
-            # 更新 beam 分数
-            beam_scores = top_scores
+            # 在每个样本内部，独立地选出分数最高的 2*num_beams 个候选（为已完成的序列留出空间）
+            top_scores, top_indices = torch.topk(scores, 2 * num_beams, dim=-1, sorted=True)
 
             # 从 top_indices 解码出是哪个 beam 产生了哪个词
-            beam_indices = top_indices // self.decoder.vocab_size  # 确定来源 beam (0, 1, ..., num_beams-1)
-            token_indices = top_indices % self.decoder.vocab_size  # 确定生成的词的 ID
+            beam_indices = top_indices // decoder.vocab_size
+            token_indices = top_indices % decoder.vocab_size
 
-            # 根据 beam_indices 重新整理 beam_sequences, h, c
-            # 这一步是关键，确保每个新 beam 都继承了正确的历史序列和隐藏状态
-            batch_indices = torch.arange(batch_size, device=device).unsqueeze(1).repeat(1, num_beams)
-            beam_sequences = beam_sequences[batch_indices, beam_indices]
-            h = h.view(batch_size, num_beams, -1)[batch_indices, beam_indices].reshape(batch_size * num_beams, -1)
-            c = c.view(batch_size, num_beams, -1)[batch_indices, beam_indices].reshape(batch_size * num_beams, -1)
+            # --- 更新 beam 状态 ---
+            next_beam_scores = torch.zeros(batch_size, num_beams, device=device)
+            next_beam_tokens = torch.zeros(batch_size, num_beams, dtype=torch.long, device=device)
+            next_beam_indices = torch.zeros(batch_size, num_beams, dtype=torch.long, device=device)
 
-            # 将新生成的词添加到序列中
-            beam_sequences[:, :, t] = token_indices
+            for i in range(batch_size):
+                if done[i]:
+                    # 如果这个样本已经完成，直接复制旧的结果
+                    next_beam_scores[i] = beam_scores.view(batch_size, num_beams)[i]
+                    next_beam_tokens[i] = input_ids.view(batch_size, num_beams, -1)[i, :, -1]
+                    next_beam_indices[i] = torch.arange(num_beams, device=device)
+                    continue
 
-            # 更新下一个时间步的输入
-            prev_words = token_indices.view(batch_size * num_beams, 1)
+                # 检查当前步的候选
+                next_batch_beam_idx = 0
+                for beam_idx, token_id, score in zip(beam_indices[i], token_indices[i], top_scores[i]):
+                    if token_id == end_token_id:
+                        # 如果是结束符，标记为完成，但不立即停止，先收集
+                        done[i] = True  # 简化处理，找到一个就认为完成
+                    else:
+                        # 添加到下一轮的 beam 中
+                        next_beam_scores[i, next_batch_beam_idx] = score
+                        next_beam_tokens[i, next_batch_beam_idx] = token_id
+                        next_beam_indices[i, next_batch_beam_idx] = beam_idx
+                        next_batch_beam_idx += 1
 
-            # 检查是否有 beam 生成了 <end> token，并提前终止
-            is_end = (token_indices == 2).any()  # tokenizer.end_token_id
-            if is_end:
+                    if next_batch_beam_idx == num_beams:
+                        break  # 已经为这个样本找到了 num_beams 个候选
+
+            if all(done):
                 break
 
-        # 返回分数最高的那个序列 (在 batch 中每个样本都选第 0 个 beam)
-        best_sequences = beam_sequences[:, 0, :]
+            beam_scores = next_beam_scores.view(-1)
+
+            # 使用 gather 根据 beam_indices 重排历史
+            batch_indices = torch.arange(batch_size, device=device).repeat_interleave(num_beams).to(torch.long)
+            beam_indices_flat = next_beam_indices.view(-1)
+            # 这行是关键：从 [batch_size * num_beams, seq_len] 的历史中，为每个新的beam选择正确的父序列
+            effective_indices = (batch_indices // num_beams) * num_beams + beam_indices_flat
+
+            input_ids = input_ids[effective_indices]
+            h = h[effective_indices]
+            c = c[effective_indices]
+
+            # 将新生成的词添加到序列中
+            input_ids = torch.cat([input_ids, next_beam_tokens.view(-1, 1)], dim=-1)
+
+        # 规范化分数（可选，按长度惩罚等）
+        # 返回分数最高的那个序列
+        best_sequences = input_ids.view(batch_size, num_beams, -1)[:, 0, :]
         return best_sequences

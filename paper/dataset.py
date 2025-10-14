@@ -59,6 +59,6 @@ def build_paper_dataset(img_dir, tokenizer, json_path, split='train', ):
     else :
         augmentations = None
     processor = AutoImageProcessor.from_pretrained("microsoft/resnet-50")
-    dataset = Flick8kDataset(img_dir=img_dir, samples=samples, tokenizer=tokenizer, transform=processor, augmentation=augmentations)
+    dataset = Flick8kDataset(img_dir=img_dir, samples=samples, tokenizer=tokenizer, transform=processor, augmentation=augmentations )
 
     return dataset

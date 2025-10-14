@@ -76,12 +76,11 @@ with torch.no_grad():
             max_length=MAX_LENGTH,
             num_beams=4
         )
-        captions = tokenizer.batch_decode(output_ids, skip_special_tokens=True)
-        captions = [cap.strip() for cap in captions]
+        captions = [tokenizer.decode(ids.cpu().tolist()) for ids in output_ids]
 
         for img_id, caption in zip(img_ids, captions):
             results.append({
-                "image_id": img_id,
+                "image_id": img_id.item(),
                 "caption": caption
             })
 
