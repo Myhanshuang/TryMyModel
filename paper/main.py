@@ -4,6 +4,7 @@ import torch
 from torch import nn, optim
 from torch.utils.data import DataLoader
 
+from utils.checkpoint import load_checkpoint, load_best_model
 from .dataset import build_paper_dataset
 from .model import PaperModel, SimpleTokenizer
 from .train import train
@@ -20,7 +21,8 @@ BATCH_SIZE = 16
 EPOCHS = 20
 LR = 1e-6
 MAX_LENGTH = 50
-D_MODEL = 512
+D_MODEL = 128
+WEIGHT_DECAY=1e-2
 DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
 
 with open(JSON_PATH, 'r') as f:
@@ -41,7 +43,7 @@ train_loader = DataLoader(train_dataset, batch_size=BATCH_SIZE, shuffle=True, nu
 test_loader = DataLoader(test_dataset, batch_size=BATCH_SIZE, shuffle=False, num_workers=8)
 
 loss_fn = nn.CrossEntropyLoss(ignore_index=pad_id)
-optimizer = optim.AdamW(model.parameters(), lr=LR)
+optimizer = optim.AdamW(model.parameters(), lr=LR, weight_decay=WEIGHT_DECAY)
 
 # optimizer = optim.AdamW([{'params': model.encoder.parameters(),'lr' : LR},
 #                         {'params': model.decoder.parameters(), 'lr' : LR * 0.1}])
@@ -62,7 +64,7 @@ best_loss = train(
 )
 
 print('-------------------------------------')
-model.eval()
+model = load_best_model(SAVE_DIR, model)
 results = []
 
 test_dataset = build_paper_dataset(IMG_DIR, tokenizer, JSON_PATH, split="test")

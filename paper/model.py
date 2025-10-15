@@ -47,7 +47,7 @@ class SimpleTokenizer:
         self.freq_threshold = tokenizer_data["freq_threshold"]
         self.max_len = tokenizer_data["max_len"]
         self.word2idx = tokenizer_data["word2idx"]
-        self.idx2word = tokenizer_data["idx2word"]
+        self.idx2word = {int(k): v for k, v in tokenizer_data["idx2word"].items()}
         self.vocab_size = len(self.idx2word)
 
     def build_vocab(self, captions):
@@ -218,7 +218,7 @@ class PaperModel(nn.Module):
 
         for t in range(max_length - 1):
             # emb.shape: [batch_size * num_beams, embedding_dim]
-            emb = decoder.emb(input_ids).squeeze(1)
+            emb = decoder.emb(input_ids[:, -1])
 
             # --- Decoder 的单步前向传播 ---
             attn_img, _ = decoder.attn(img_features, h)

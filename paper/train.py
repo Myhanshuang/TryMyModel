@@ -48,6 +48,32 @@ def finish_pic(path_dir, fig, model_name):
     # 显示最终图像，程序会在此暂停直到关闭窗口
     plt.show()
 
+def set_alpha_pic():
+    plt.ion()
+    fig, ax = plt.subplots()
+    alpha_line, = ax.plot([], [], 'g-', label='Alpha Std Dev')
+    ax.set_title('Alpha Std Dev Over Training')
+    ax.set_xlabel('Iterations')
+    ax.set_ylabel('Alpha Std Dev')
+    ax.legend()
+    ax.grid(True)
+    return alpha_line, ax, fig
+
+def update_alpha_pic(alphas, alpha_line, ax, fig):
+    iterations = range(len(alphas))
+    alpha_line.set_xdata(iterations)
+    alpha_line.set_ydata(alphas)
+    ax.relim()
+    ax.autoscale_view()
+    fig.canvas.flush_events()
+
+def finish_alpha_pic(path_dir, fig, model_name):
+    plt.ioff()
+    alpha_plot_path = f"{path_dir}/{model_name}_alpha_curve.png"
+    fig.savefig(alpha_plot_path)
+    print(f"Alpha curve saved to {alpha_plot_path}")
+    plt.show()
+
 def evaluate(model, loss, dataloader, pad_id, device):
     total_loss = 0
     model.eval()
@@ -62,10 +88,11 @@ def evaluate(model, loss, dataloader, pad_id, device):
 
     return total_loss / len(dataloader)
 
-def train_one_epoch(model, dataloader, loss, epoch, optimizer, pad_id, device, scaler, scheduler = None, lmd=0.01):
+def train_one_epoch(model, dataloader, loss, epoch, optimizer, pad_id, device, scaler, scheduler = None, lmd=0.1):
     total_loss = 0
     model.train()
     print(f"number {epoch}th training :")
+    alphas = []
     for i, batch in enumerate(dataloader):
         img = batch['pixel_values'].to(device)
         tgt = batch['labels'].to(device)
@@ -73,7 +100,7 @@ def train_one_epoch(model, dataloader, loss, epoch, optimizer, pad_id, device, s
         optimizer.zero_grad()
         with autocast():
             pred, alpha = model(img, tgt)
-            print(alpha.std().item())
+            alphas.append(alpha.std().item())
             att_reg = lmd * ((1 - alpha.sum(dim=1)) ** 2).mean()
             loss_num = loss(pred.reshape(-1, pred.shape[-1]), label.reshape(-1)) + att_reg
         total_loss += loss_num.item()
@@ -82,7 +109,7 @@ def train_one_epoch(model, dataloader, loss, epoch, optimizer, pad_id, device, s
         scaler.update()
         if scheduler is not None:
             scheduler.step()
-    return total_loss / len(dataloader)
+    return total_loss / len(dataloader), alphas
 
 def train(epochs, model, loss, optimizer, trainloader, testloader, path_dir, pad_id, device, scheduler=None):
     train_loss_all, test_loss_all = [], []
@@ -93,10 +120,13 @@ def train(epochs, model, loss, optimizer, trainloader, testloader, path_dir, pad
     best_models = []
     if path_dir is not None:
         start_epoch, best_models, train_loss_all, test_loss_all = load_checkpoint(path_dir=path_dir, model=model, optimizer=optimizer, scheduler=scheduler)
-
+    alphas = []
+    alpha_line, alpha_ax, alpha_fig = set_alpha_pic()
     for epoch in range(start_epoch, epochs):
         start_time = time.time()
-        train_loss = train_one_epoch(model=model, dataloader=trainloader, loss=loss, epoch=epoch, optimizer=optimizer, scheduler=scheduler, pad_id=pad_id, device=device, scaler=scaler)
+        train_loss, t = train_one_epoch(model=model, dataloader=trainloader, loss=loss, epoch=epoch, optimizer=optimizer, scheduler=scheduler, pad_id=pad_id, device=device, scaler=scaler)
+        alphas.extend(t)
+        update_alpha_pic(alphas, alpha_line, alpha_ax, alpha_fig)
         test_loss = evaluate(model=model, dataloader=testloader, loss=loss, pad_id=pad_id, device=device)
         end_time = time.time()
 
@@ -107,7 +137,7 @@ def train(epochs, model, loss, optimizer, trainloader, testloader, path_dir, pad
         update_pic(train_loss_all, test_loss_all, train_line, test_line, ax, fig)
 
         best_models = save_checkpoint(model=model, optimizer=optimizer, epoch=epoch, loss=test_loss, path_dir=path_dir, best_models=best_models, scheduler=scheduler, train_loss_all=train_loss_all, test_loss_all=test_loss_all)
-
+    finish_alpha_pic(path_dir=path_dir, fig=alpha_fig, model_name=model.name)
     finish_pic(path_dir=path_dir, fig=fig, model_name=model.name)
 
     return min(test_loss_all)

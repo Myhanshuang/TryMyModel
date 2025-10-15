@@ -45,8 +45,11 @@ def build_paper_dataset(img_dir, tokenizer, json_path, split='train', ):
     samples = []
     for item in data['images']:
         if item['split'] == split:
-            for sentence in item['sentences']:
-                samples.append((item['filename'], sentence['raw'], item['imgid']))
+            if split == 'test':
+                samples.append((item['filename'], '', item['imgid']))
+            else:
+                for sentence in item['sentences']:
+                    samples.append((item['filename'], sentence['raw'], item['imgid']))
 
     # data augmentation & fit for model
     if split == 'train':
