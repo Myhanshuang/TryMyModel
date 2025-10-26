@@ -55,14 +55,14 @@ def evaluate(model, loss, dataloader, pad_id, device):
         for i, batch in enumerate(dataloader):
             img = batch['pixel_values'].to(device)
             tgt = batch['labels'].to(device)
-            label = tgt[:, 1:]
-            tgt = tgt[:, :-1]
-            mask = (tgt == pad_id)
-            pred = model(img, tgt, mask)
-            # output = model(pixel_values=img, labels=tgt)
-            # pred = output.logits
-            loss_num = loss(pred.reshape(-1, pred.shape[-1]), label.reshape(-1))
-            # loss_num = output.loss
+            # label = tgt[:, 1:] # mymodel
+            # tgt = tgt[:, :-1] # mymodel
+            # mask = (tgt == pad_id) # mymodel
+            # pred = model(img, tgt, mask)# mymodel
+            output = model(pixel_values=img, labels=tgt)
+            pred = output.logits
+            # loss_num = loss(pred.reshape(-1, pred.shape[-1]), label.reshape(-1)) # mymodel
+            loss_num = output.loss
             total_loss += loss_num.item()
 
     return total_loss / len(dataloader)
@@ -74,16 +74,16 @@ def train_one_epoch(model, dataloader, loss, epoch, optimizer, pad_id, device, s
     for i, batch in enumerate(dataloader):
         img = batch['pixel_values'].to(device)
         tgt = batch['labels'].to(device)
-        label = tgt[:, 1:]
-        tgt = tgt[:, :-1]
+        # label = tgt[:, 1:] # mymodel
+        # tgt = tgt[:, :-1] # mymodel
         optimizer.zero_grad()
-        mask = (tgt == pad_id)
+        # mask = (tgt == pad_id) # mymodel
         with autocast():
-            pred = model(img, tgt, mask)
-            # output = model(pixel_values=img, labels=tgt)
-            # pred = output.logits
-            loss_num = loss(pred.reshape(-1, pred.shape[-1]), label.reshape(-1))
-            # loss_num = output.loss
+            # pred = model(img, tgt, mask) # mymodel
+            output = model(pixel_values=img, labels=tgt)
+            pred = output.logits
+            # loss_num = loss(pred.reshape(-1, pred.shape[-1]), label.reshape(-1)) # mymodel
+            loss_num = output.loss
         total_loss += loss_num.item()
         scaler.scale(loss_num).backward()
         # loss_num.backward()
@@ -93,6 +93,9 @@ def train_one_epoch(model, dataloader, loss, epoch, optimizer, pad_id, device, s
         scaler.update()
         if scheduler is not None:
             scheduler.step()
+
+    # if scheduler is not None:
+    #     scheduler.step()
     return total_loss / len(dataloader)
 
 
@@ -132,7 +135,7 @@ def train(epochs, model, loss, optimizer, trainloader, testloader, path_dir, pad
         test_loss = evaluate(model=model, dataloader=testloader, loss=loss, pad_id=pad_id, device=device)
         end_time = time.time()
 
-        alpha_history.append((epoch, model.decoder.alpha.item()))
+        # alpha_history.append((epoch, model.decoder.alpha.item()))
         # print(model.decoder.alpha.item())
         train_loss_all.append(train_loss)
         test_loss_all.append(test_loss)
@@ -142,11 +145,11 @@ def train(epochs, model, loss, optimizer, trainloader, testloader, path_dir, pad
 
         best_models = save_checkpoint(model=model, optimizer=optimizer, epoch=epoch, loss=test_loss, path_dir=path_dir, best_models=best_models, scheduler=scheduler, train_loss_all=train_loss_all, test_loss_all=test_loss_all)
 
-    finish_pic(path_dir=path_dir, fig=fig, model_name=model.name)
+    # finish_pic(path_dir=path_dir, fig=fig, model_name=model.name)
 
-    # model_name = 'pretrain_vit_gpt2'
-    # finish_pic(path_dir=path_dir, fig=fig, model_name=model_name)
+    model_name = 'ViT-GPT2'
+    finish_pic(path_dir=path_dir, fig=fig, model_name=model_name)
 
-    draw_alpha_history(alpha_history=alpha_history, path_dir='.', model_name=model.name)
+    # draw_alpha_history(alpha_history=alpha_history, path_dir='.', model_name=model.name)
 
     return min(test_loss_all)

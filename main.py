@@ -12,6 +12,7 @@ from model.model import Model, ShowAttendTellModel
 from train import train
 from predict import generate_predictions
 from eval import evaluate
+from torch.optim.lr_scheduler import CosineAnnealingLR
 
 DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 IMG_DIR = "data/flickr8k_aim3/images"
@@ -19,12 +20,17 @@ JSON_PATH = "data/flickr8k_aim3/dataset_flickr8k.json"
 CHECKPOINT_DIR = "/home/acacia/PycharmProjects/PythonProject5/checkpoints"
 
 D_MODEL = 128
-NHEAD = 8
-EPOCHS = 20
+NHEAD = 8   
+EPOCHS = 60
 BATCH_SIZE = 64
-LEARNING_RATE = 5e-5
+LEARNING_RATE = 1e-2
 seed = 42
 weight_decay = 0
+num_samples = 3000 * 5
+warmup_ratio = 0.1
+num_training_steps = (num_samples // BATCH_SIZE) * EPOCHS
+num_warmup_steps = int(num_training_steps * warmup_ratio)
+
 annotation = 'flickr8k_test_coco_format.json'
 torch.manual_seed(seed)
 if torch.cuda.is_available():
@@ -38,28 +44,28 @@ output_filename = 'my_predictions.json'
 
 
 def get_model(D_MODEL, VOCAB_SIZE, NHEAD, DEVICE):
-    encoder = MyVisionEncoder(output_dim=D_MODEL)
+    # encoder = MyVisionEncoder(output_dim=D_MODEL)
     # encoder = ViTEncoder(d_model=D_MODEL, output_dim=D_MODEL, n_layers=4)
-    decoder = MyTextDecoder(d_model=D_MODEL, vocab_size=VOCAB_SIZE, nhead=NHEAD)
-    model = Model(img_encoder=encoder, text_decoder=decoder, name='MyModel').to(DEVICE)
+    # decoder = MyTextDecoder(d_model=D_MODEL, vocab_size=VOCAB_SIZE, nhead=NHEAD)
+    # model = Model(img_encoder=encoder, text_decoder=decoder, name='MyModel').to(DEVICE)
 
-    # model = VisionEncoderDecoderModel.from_encoder_decoder_pretrained(
-    #     "google/vit-base-patch16-224-in21k",
-    #     "gpt2"
-    # ).to(DEVICE)
-    # model.config.decoder_start_token_id = tokenizer.bos_token_id
-    # model.config.pad_token_id = tokenizer.pad_token_id
-    # lora_config = LoraConfig(
-    #     r=16,
-    #     lora_alpha=32,
-    #     target_modules=["query", "value", "q_proj", "v_proj", "c_attn"],
-    #     lora_dropout=0.05,
-    #     bias="none",  # 通常不训练 bias
-    # )
-    # peft_model = get_peft_model(model, lora_config)
+    model = VisionEncoderDecoderModel.from_encoder_decoder_pretrained(
+        "google/vit-base-patch16-224-in21k",
+        "gpt2"
+    ).to(DEVICE)
+    model.config.decoder_start_token_id = tokenizer.bos_token_id
+    model.config.pad_token_id = tokenizer.pad_token_id
+    lora_config = LoraConfig(
+        r=16,
+        lora_alpha=32,
+        target_modules=["query", "value", "q_proj", "v_proj", "c_attn"],
+        lora_dropout=0.05,
+        bias="none",  # 通常不训练 bias
+    )
+    peft_model = get_peft_model(model, lora_config)
 
     # model = ShowAttendTellModel(d_model=D_MODEL, embed_dim=D_MODEL, decoder_dim=D_MODEL, vocab_size=tokenizer.vocab_size).to(DEVICE)
-    return model
+    return peft_model
 
 
 def main():
@@ -75,10 +81,10 @@ def main():
         CHECKPOINT_DIR=CHECKPOINT_DIR,
         weight_decay=weight_decay,
         tokenizer=tokenizer,
-        num_warmup_steps=6,
-        num_training_steps=20
+        num_warmup_steps=num_warmup_steps,
+        num_training_steps=num_training_steps
     )
-
+    print(tokenizer.vocab_size)
     # scores = run_k_fold_training(
     #     img_dir=IMG_DIR,
     #     json_path=JSON_PATH,
@@ -95,10 +101,10 @@ def main():
     #     tokenizer=tokenizer
     # )
     # print(scores)
-    model_name = 'MyModel'
+    model_name = 'ViT-GPT2'
     model = get_model(D_MODEL=D_MODEL, VOCAB_SIZE=VOCAB_SIZE, NHEAD=NHEAD, DEVICE=DEVICE)
     model = load_best_model(CHECKPOINT_DIR, model)
-    test_loader = build_dataset(img_dir=IMG_DIR, tokenizer=tokenizer, json_path=JSON_PATH, split='test')
+    test_loader = build_dataset_pretrain(img_dir=IMG_DIR, tokenizer=tokenizer, json_path=JSON_PATH, split='test')
     # test_loader = build_dataset(img_dir=IMG_DIR, tokenizer=tokenizer, json_path=JSON_PATH, split='test')
     # outputs = generate_predictions(model, test_loader, tokenizer, DEVICE, model.name + output_filename)
     # evaluate(annotation, model.name + output_filename, model.name)
@@ -107,10 +113,10 @@ def main():
 
 def normal_train(tokenizer, IMG_DIR, JSON_PATH, BATCH_SIZE, D_MODEL, NHEAD, DEVICE, LEARNING_RATE, EPOCHS, CHECKPOINT_DIR, weight_decay, num_warmup_steps, num_training_steps):
     VOCAB_SIZE = tokenizer.vocab_size
-    train_dataset = build_dataset(IMG_DIR, tokenizer, JSON_PATH, split='train')
-    val_dataset = build_dataset(IMG_DIR, tokenizer, JSON_PATH, split='val')
-    # train_dataset = build_dataset_pretrain(IMG_DIR, tokenizer, JSON_PATH, split='train')
-    # val_dataset = build_dataset_pretrain(IMG_DIR, tokenizer, JSON_PATH, split='val')
+    # train_dataset = build_dataset(IMG_DIR, tokenizer, JSON_PATH, split='train')
+    # val_dataset = build_dataset(IMG_DIR, tokenizer, JSON_PATH, split='val')
+    train_dataset = build_dataset_pretrain(IMG_DIR, tokenizer, JSON_PATH, split='train')
+    val_dataset = build_dataset_pretrain(IMG_DIR, tokenizer, JSON_PATH, split='val')
 
     train_loader = DataLoader(train_dataset, batch_size=BATCH_SIZE, shuffle=True, num_workers=8,
                               persistent_workers=True)
@@ -125,6 +131,9 @@ def normal_train(tokenizer, IMG_DIR, JSON_PATH, BATCH_SIZE, D_MODEL, NHEAD, DEVI
     #     num_warmup_steps=num_warmup_steps,
     #     num_training_steps=num_training_steps
     # )
+
+    scheduler = CosineAnnealingLR(optimizer, T_max=len(train_loader) * EPOCHS)
+
     return train(
         epochs=EPOCHS,
         model=model,
@@ -135,7 +144,7 @@ def normal_train(tokenizer, IMG_DIR, JSON_PATH, BATCH_SIZE, D_MODEL, NHEAD, DEVI
         path_dir=CHECKPOINT_DIR,
         pad_id=tokenizer.pad_token_id,
         device=DEVICE,
-        # scheduler=scheduler
+        scheduler=scheduler
     )
 
 def run_k_fold_training(tokenizer, img_dir, json_path, device, checkpoint_dir, n_splits, batch_size, d_model, nhead, lr, epochs, seed, weight_decay):
